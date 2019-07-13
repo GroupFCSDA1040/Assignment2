@@ -304,9 +304,11 @@ The resultant model maybe used to analyse similar tweet data sets related to an 
 
 ##Shiny App Deployment##
 
-This model has been deployed in Shiny App and can be found at the following link: ... 
+This model has been deployed in Shiny App and can be found at the following link:
+https://groupf.shinyapps.io/shiny/
 
-Additional data files can be found on GitHub at the following link: ...
+Additional code and data files can be found on GitHub at the following link:
+https://github.com/GroupFCSDA1040/Assignment2
 
 ```{r, echo=TRUE, include=TRUE}
 #install.packages('rsconnect')
