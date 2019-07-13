@@ -1,0 +1,322 @@
+---
+title: "Assignment 2 Group F"
+output: html_document
+---
+**Anime Recommender System**
+By Eric C, Shijo J and Michael M
+
+##1. Introduction & Objective## 
+The goal of this project is to build a wordcloud with which to aid in the identification of Russian Trolls through analyses of keywords from their tweets. Additionally, a cluster analysis is done in order to further aid in this process. Modern day politics are inextricably intertwined and influenced by politicians' social media presence. Being able to separate the signal from the noise is an indispensible commodity.
+
+##2. Dataset##
+Our dataset consists of Russian troll tweets containing 16 columns and over 100K rows retrieved from https://www.kaggle.com/vikasg/russian-troll-tweets#tweets.csv. The information also includes a second separate but related dataset containing informations on twitter users; including id number, location, name, followers count, time zone and related. However, for our purposes we will focus on the tweets.csv file as this file contains the content that we are mining.
+
+##3. Ethical ML Framework##
+Regarding the Ethical Framework, the areas of vulnerabilities identified were issues with identity, malicious actors, and negative effects on individuals. As these are twitter accounts with webhandles and names, care must be taken to de-identify participants. If an individual needs to be referred to, we can use their internal twitter id number to preserve anonymity. As this is an analysis on Russian trolls, these are already malicious actors who have been suspected of attempting to influence US elections. Steps towards anonymity can lessen the chance of further organized attempts. However, we must note that these are only suspected individuals and analyses may generate false positives. Identity must be protected to avoid mislabling an innocent.
+
+
+```{r echo=FALSE, include=FALSE}
+library(readr)
+library(ggplot2) 
+library(dplyr)
+library(psych)
+library(corrplot)
+library(corrgram)
+library(recommenderlab)
+library(reshape2)
+library(tidyr)
+library(kableExtra)
+library(gridExtra)
+library(ggthemes)
+library(RColorBrewer)
+library(tm)
+library(tidytext)
+library(wordcloud)
+library(lubridate)
+library(viridis)
+library(textclean)
+library(pacman)
+library(textstem)
+library(stopwords)
+library(tokenizers)
+library(sentimentr)
+```
+
+```{r, echo=FALSE, include=FALSE}
+tweets <- read_csv("tweets.csv")
+```
+
+##Data Preparation and Cleaning##
+
+Viewing the characteristics of the data.
+```{r, echo=TRUE, include=FALSE}
+View(tweets)
+```
+
+```{r, echo=FALSE, include=TRUE}
+summary(tweets)
+nrow(tweets)
+ncol(tweets)
+```
+
+We can see that there are N/A values in this dataset. As both the User_ID and Text attributes are important, we will delete N/A values for these two. 
+```{r, echo=FALSE, include=TRUE}
+sum(is.na(tweets$user_id))
+sum(is.na(tweets$text))
+```
+
+After we deleted the N/A rows we still had over 100K in rows.
+```{r, echo=FALSE, include=TRUE}
+tweets <- tweets[!is.na(tweets$user_id),]
+tweets <- tweets[!is.na(tweets$text),]
+nrow(tweets)
+```
+
+
+We seperated the date attributes based off of the created_str attribute within the data set. This creates four new attributes to assist in analysis of tweets over time.  
+```{r, echo=TRUE, include=TRUE}
+tweets$text <- as.character(tweets$text)
+tweets$dateTS <- as.Date(tweets$created_str,format="%Y-%m-%d")
+tweets$year <- year(tweets$dateTS)
+tweets$month <- month(tweets$dateTS)
+tweets$day <- day(tweets$dateTS)
+```
+
+##Data Visualiztion##
+
+We can observe the large volumes of tweets from these individuals in the months leading up to and following the election. Below is the timeline of tweets for our dataset. 
+```{r, echo=TRUE, include=TRUE}
+DailyTweets<-tweets %>% group_by(dateTS) %>% summarise(count=n()) %>% 
+ggplot(aes(x=dateTS,y=count)) + geom_point(size=1) + geom_line(alpha=.5,size=1) +
+  theme_fivethirtyeight() + labs(title="Timeline of Daily Tweets")
+DailyTweets
+```
+
+Below is the timeline of tweets leading into the election which was in November 2016. 
+```{r, echo=TRUE, include=TRUE}
+DailyTweets2016<-tweets %>% filter(year==2016) %>% group_by(dateTS) %>% summarise(count=n()) %>% 
+ggplot(aes(x=dateTS,y=count)) + geom_point(size=1) + geom_line(alpha=.5,size=1) +
+  theme_fivethirtyeight() + labs(title="Timeline of Daily Tweets: 2016")
+DailyTweets2016
+```
+
+Below is the timeline of tweets in 2017, after the election. 
+```{r, echo=TRUE, include=TRUE}
+DailyTweets2017<-tweets %>% filter(year==2017) %>% group_by(dateTS) %>% summarise(count=n()) %>% 
+ggplot(aes(x=dateTS,y=count)) + geom_point(size=1) + geom_line(alpha=.5,size=1) +
+  theme_fivethirtyeight() + labs(title="Timeline of Daily Tweets: 2017")
+DailyTweets2017
+```
+
+
+##Text Analysis##
+First we need to remove the tweets that are not in English. This results in 117,151 tweets remaining.
+```{r, echo=TRUE, include=TRUE}
+tweets <- tweets %>% 
+          mutate(text = iconv(text, from = "latin1", to = "ASCII")) %>%
+          filter(!is.na(text))
+nrow(tweets)
+```
+
+We now need to continue to prepare and clean the data. Below we are removing contractions and using lemmatize string to group together inflected forms of a word so they can be analysed as a single item.
+```{r, echo=TRUE, include=TRUE}
+tweets$text %>%
+textclean::replace_contraction() %>%
+lemmatize_strings() %>%
+head()
+```
+
+We now need to convert the tweets into a data frame and then a corpus. Due to data processing times we had to reduce the number of tweets in our data frame to 15,000.
+```{r, echo=TRUE, include=TRUE}
+tweets.df <- data.frame(tweets)
+dim(tweets.df)
+View(tweets.df)
+tweets.df <- tweets.df[1:15000,] 
+```
+
+
+```{r, echo=TRUE, include=TRUE}
+myCorpus <- Corpus(VectorSource(tweets.df$text))
+
+inspect(myCorpus[1:10]) 
+```
+
+Transforming the Corpus including the removal of punctuation, numbers and 'https'.
+```{r, echo=TRUE, include=TRUE}
+myCorpus <- tm_map(myCorpus, removePunctuation)
+
+myCorpus <- tm_map(myCorpus, removeNumbers)
+
+toSpace = content_transformer( function(x, pattern) gsub(pattern,"",x) )
+myCorpus = tm_map( myCorpus, toSpace, "https.*")
+myCorpus = tm_map(myCorpus, content_transformer(tolower))
+inspect(myCorpus[1:10])
+```
+
+We then viewed the list of words included in the Stopwords package. After viewing the words included we have decided not to amend this list. We will analyze the text and then reconsider if we should be adding or removing any words.
+```{r, echo=TRUE, include=TRUE}
+View(stopwords(language="en", source="smart"))
+myCorpus <- tm_map(myCorpus, stripWhitespace)
+myCorpus <- tm_map(myCorpus, removeWords, c(stopwords(language="en", source="smart")))
+View(myCorpus)
+
+```
+
+
+After that we stemmed the data to retrieve their radicals and then completed the stems to their original forms. 
+```{r, echo=TRUE, include=TRUE}
+dictCorpus <- myCorpus
+myCorpus <- tm_map(myCorpus, stemDocument)
+inspect(myCorpus[1:10])
+
+myCorpus <- tm_map(myCorpus, stemCompletion, dictionary=dictCorpus)
+inspect(myCorpus[1:10]) 
+```
+
+Save the corpus into a RDS file for shiny app.
+```{r}
+saveRDS(myCorpus, file = "myCorpus.Rds")
+```
+
+Create a term document matrix to find the frequency of terms that occur in a collection of documents(corpus).
+```{r}
+myDtm <- TermDocumentMatrix(myCorpus, control = list(minWordLength = 1))
+```
+
+Find the sum of words in each Document and remove documents without words.
+```{r}
+rowTotals <- apply(myDtm , 1, sum) 
+myDtm <- myDtm[rowTotals > 0, ] 
+#inspect(myDtm)
+saveRDS(myDtm, file = "mydtm.Rds")
+```
+
+Create a wordcloud from the termdocument matrix.
+```{r}
+m <- as.matrix(myDtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+head(d,10)
+```
+
+```{r}
+set.seed(1234)
+png("Russian_Troll_Tweets.png", width=1280, height=800)
+wordcloud(words = d$word,freq=d$freq, scale=c(4,.5), min.freq = 1,
+          max.words=Inf, random.order=FALSE, rot.per=0.15, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+Barplot for the most frequent words.
+```{r}
+barplot(d[1:10,]$freq, las = 2, names.arg = d[1:10,]$word,
+        col ="lightblue", main ="Most frequent words",
+        ylab = "Word frequencies")
+```
+
+
+##CLUSTER ANALYSIS, SENTIMENT ANALYSIS##
+
+Analyze the underlying text value of tweets in a programatic manner. We found the sum of words in each document and also removed all documents without words. 
+```{r, echo=TRUE, include=TRUE}
+myCorpus <- Corpus(VectorSource(tweets.df$text))
+myDtm <- TermDocumentMatrix(myCorpus, control = list(minWordLength = 1))
+
+inspect(myDtm[1:10,1:10])
+
+rowTotals <- apply(myDtm , 1, sum)
+myDtm <- myDtm[rowTotals > 0, ]
+```
+
+In order to build a cluster example we need to remove sparse terms. We then plotted the cluster analysis.
+```{r, echo=TRUE, include=TRUE}
+tdm2 <- removeSparseTerms(myDtm, sparse = 0.98)
+m2 <- as.matrix(tdm2)
+
+
+distMatrix <- dist(scale(m2))
+head(distMatrix)
+fit <- hclust(distMatrix, method = "ward.D")
+plot(fit)
+```
+
+Below we have plotted the clusters bordered by a red line. We cut the tree into three clusters.
+```{r, echo=TRUE, include=TRUE}
+{plot(fit) 
+  rect.hclust(fit, k = 3)}
+```
+
+##Kmeans Cluster##
+```{r, echo=TRUE, include=TRUE}
+m3 <- t(m2) # transpose the matrix to cluster documents (tweets)
+set.seed(122) # set a fixed random seed
+k <- 9 # number of clusters
+kmeansResult <- kmeans(m3, k)
+round(kmeansResult$centers, digits = 3) # cluster centers
+
+for (i in 1:k) {
+cat(paste("cluster ", i, ": ", sep = ""))
+s <- sort(kmeansResult$centers[i, ], decreasing = T)
+cat(names(s)[1:8], "\n")}
+```
+
+##Topic Modelling##
+
+Topic modeling is a process in which documents are clustered through an unsupervised classification. We hope this will help us to find the favourite subjects on which these twitter trolls were tweeting, maybe outised of the elections. Using similar traits we could get some more inference into whether there are any more hidden agendas being propogated.
+
+Since Latent Dirichlet allocation (LDA) is the most popular method for fitting a topic model, we decided to use that. It treats each document as a mixture of topics, and each topic as a mixture of words. This allows documents to "overlap" each other in terms of content, rather than being separated into discrete groups, in a way that mirrors typical use of natural language.
+```{r, echo=TRUE, include=TRUE}
+saveRDS(tweets.df, file = "tweetsdf.Rds")
+dtm <- as.DocumentTermMatrix(myDtm)
+saveRDS(dtm, file = "dtm.Rds")
+ui = unique(dtm$i)
+dtm.new = dtm[ui,]
+tweets.df.new = tweets.df[ui,]
+library(topicmodels)
+
+lda <- LDA(dtm.new, k = 10) # find 10 topics
+(term <- terms(lda, 10)) # first 10 terms of every topic
+View(tweets.df.new)
+# first topic identified for every document (tweet)
+topic <- topics(lda, 1)
+library(data.table)
+topics <- data.frame(date=as.IDate(tweets.df.new$dateTS), topic)
+
+qplot(date, ..count.., data=topics, geom="density",
+fill=term[topic], position="stack")
+```
+
+We also decided to do a quick sentiment analysis as you will see below. Through this we are tring to extract some emotional content from the tweets using sentimentr library. While we agree sentiment analysis in and of itself is pretty complex to do on a twitter dataset, but we decided to get our hands dirty and quick peek. Below are the results and there is plenty more that can be done to derive meaningful sentiment inferences.
+```{r, echo=TRUE, include=TRUE}
+sentiments <- sentiment_by(tweets.df$text)
+sentiments <- as.data.frame(sentiments)
+
+# sentiment plot
+colnames(sentiments)=c("score")
+sentiments$date <- as.IDate(tweets.df$dateTS)
+result <- aggregate(score ~ date, data = sentiments, sum)
+plot(result, type = "l")
+
+```
+
+##Conclusion##
+The resultant model maybe used to analyse similar tweet data sets related to an event or product extracted from twitter. Twitter developer account enables one to extract all tweets related to a hashtag or a specific geoborder in a timeframe. The current model could be improved by feeding similar twitter datasets and thus deriving more meaningful information. Although we had some issues with our wordcloud as some words were not plotted due to the limitations in scale and word size, it is still interesting to see the most common words and themes being used by Russian Trolls. With the deployment of our Shinyapp, further discussed below, we can analyse the Russian Tweets by grouping them through topics and by selecting the number of grams and words for our Wordcloud.
+
+##Shiny App Deployment##
+
+This model has been deployed in Shiny App and can be found at the following link: ... 
+
+Additional data files can be found on GitHub at the following link: ...
+
+```{r, echo=TRUE, include=TRUE}
+#install.packages('rsconnect')
+library(rsconnect)
+rsconnect::setAccountInfo(name='groupf',
+			  token='45F3D9A54EC267F9E0824D3C6A19D9C0',
+			  secret='RtJ7UlR+KXSIqPZX/OQJHhPC7WCvopOe69uCL9Vc')
+
+deployApp('...')
+
+rsconnect::showLogs()
+
+```
